@@ -3,8 +3,17 @@
 Problem: An email address of mine got added to a spam email service that would send me multiple emails a day with inconsistent email domains, making it impossible to unsubscribe or block them. However, all email domains start with `@-----` followed by a random string of letters and numbers.
 
 A Docker service that checks the Outlook/Microsoft 365 Junk Email folder every
-day and moves messages from selected sender domains to Deleted Items. It uses
-Microsoft Graph rather than browser automation.
+day and moves messages whose sender begins with `info@-----` to Deleted Items.
+It uses Microsoft Graph rather than browser automation.
+
+Each run checks the entire current Junk Email folder, not only messages received
+that day. If Docker is stopped for several days—or this is the first run—the
+next cleanup processes all matching older messages still in Junk Email. Graph
+pagination ensures the cleaner continues beyond the first 100 messages.
+
+The cleaner completes the full scan before deleting anything. This stable
+snapshot prevents deletions from shifting Graph's paginated results and causing
+later matching messages to be skipped.
 
 ## 1. Register a Microsoft application
 
@@ -15,8 +24,16 @@ flows. Add these **delegated** Microsoft Graph permissions:
 - `User.Read`
 - `offline_access`
 
-Under **Authentication**, enable **Allow public client flows**. Copy the
-Application (client) ID.
+Under **Authentication**:
+
+1. Select **Add a platform**.
+2. Select **Mobile and desktop applications**.
+3. Select the `http://localhost` redirect URI and configure it.
+4. Under **Advanced settings**, set **Allow public client flows** to **Yes**.
+5. Save the registration.
+
+Copy the Application (client) ID. Microsoft can take a few minutes to apply
+authentication-setting changes.
 
 For a personal Outlook/Hotmail mailbox, the registration must support personal
 Microsoft accounts. A work or school tenant may require administrator approval.
@@ -30,18 +47,13 @@ cp .env.example .env
 Edit `.env`:
 
 - Set `MICROSOFT_CLIENT_ID`.
-- Set `TARGET_DOMAINS` to one or more comma-separated domains, and/or set
-  `TARGET_EMAIL_PREFIXES` to stable beginnings of sender addresses.
+- For a personal-account-only registration, leave
+  `MICROSOFT_TENANT_ID=consumers`.
+- Leave `TARGET_EMAIL_PREFIXES=info@-----`.
 - Leave `DRY_RUN=true` until you have checked the logs.
 - Set `RUN_AT` and `TZ` for the daily schedule.
 
-The matcher includes subdomains but observes domain boundaries. For example,
-`example.com` matches `news.example.com`, but not `notexample.com`.
-
-If domains are randomized, an address prefix can be used instead:
-
 ```dotenv
-TARGET_DOMAINS=
 TARGET_EMAIL_PREFIXES=info@-----
 ```
 
@@ -71,6 +83,9 @@ docker compose logs -f
 The service runs once on startup by default, then at `RUN_AT` every day. Docker
 restarts it automatically unless you deliberately stop it. The Docker engine
 (Docker Desktop on macOS) must be running for the schedule to execute.
+
+There is no missed-day bookkeeping to configure: after downtime, the startup
+run scans the full existing Junk Email backlog automatically.
 
 Review several dry runs. When the matches are correct, set:
 

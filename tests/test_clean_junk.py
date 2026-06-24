@@ -1,35 +1,15 @@
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from clean_junk import (
-    domain_matches,
+    Settings,
+    clean,
     email_prefix_matches,
-    normalize_domain,
-    sender_domain,
 )
 
 
-class DomainMatchingTests(unittest.TestCase):
-    def test_normalize_domain(self) -> None:
-        self.assertEqual(
-            normalize_domain(" @News.Example.COM. "),
-            "news.example.com",
-        )
-
-    def test_sender_domain(self) -> None:
-        self.assertEqual(
-            sender_domain("Person@News.Example.com"),
-            "news.example.com",
-        )
-        self.assertIsNone(sender_domain(None))
-        self.assertIsNone(sender_domain("not-an-email"))
-
-    def test_domain_matching_is_boundary_safe(self) -> None:
-        targets = ("example.com",)
-        self.assertTrue(domain_matches("example.com", targets))
-        self.assertTrue(domain_matches("news.example.com", targets))
-        self.assertFalse(domain_matches("notexample.com", targets))
-        self.assertFalse(domain_matches("example.com.evil.test", targets))
-
+class EmailPrefixMatchingTests(unittest.TestCase):
     def test_email_prefix_matching(self) -> None:
         prefixes = ("info@-----",)
         self.assertTrue(
@@ -49,6 +29,63 @@ class DomainMatchingTests(unittest.TestCase):
         )
         self.assertFalse(
             email_prefix_matches("myinfo@-----mail.example.com", prefixes)
+        )
+
+
+class CleanupTests(unittest.TestCase):
+    def test_collects_all_matches_before_deleting(self) -> None:
+        events: list[str] = []
+
+        class FakeGraphClient:
+            def __init__(self, _settings: Settings) -> None:
+                pass
+
+            def junk_messages(self):
+                events.append("scan-1")
+                yield {
+                    "id": "first",
+                    "from": {
+                        "emailAddress": {
+                            "address": "info@-----mail.first.example"
+                        }
+                    },
+                }
+                events.append("scan-2")
+                yield {
+                    "id": "second",
+                    "from": {
+                        "emailAddress": {
+                            "address": "info@-----mail.second.example"
+                        }
+                    },
+                }
+                events.append("scan-complete")
+
+            def delete_message(self, message_id: str) -> None:
+                events.append(f"delete-{message_id}")
+
+        settings = Settings(
+            client_id="client",
+            tenant_id="consumers",
+            target_email_prefixes=("info@-----",),
+            dry_run=False,
+            token_cache_file=Path("/tmp/not-used"),
+            request_timeout=30,
+            max_retries=0,
+        )
+
+        with patch("clean_junk.GraphClient", FakeGraphClient):
+            self.assertEqual(clean(settings), 0)
+
+        self.assertEqual(
+            events,
+            [
+                "scan-1",
+                "scan-2",
+                "scan-complete",
+                "delete-first",
+                "delete-second",
+            ],
         )
 
 

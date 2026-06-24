@@ -32,7 +32,6 @@ def env_bool(name: str, default: bool) -> bool:
 class Settings:
     client_id: str
     tenant_id: str
-    target_domains: tuple[str, ...]
     target_email_prefixes: tuple[str, ...]
     dry_run: bool
     token_cache_file: Path
@@ -40,32 +39,25 @@ class Settings:
     max_retries: int
 
     @classmethod
-    def from_env(cls, require_domains: bool = True) -> "Settings":
+    def from_env(cls, require_prefixes: bool = True) -> "Settings":
         client_id = os.getenv("MICROSOFT_CLIENT_ID", "").strip()
         if not client_id:
             raise ValueError("MICROSOFT_CLIENT_ID is required")
 
-        raw_domains = os.getenv("TARGET_DOMAINS", "")
-        domains = tuple(
-            normalized
-            for value in raw_domains.split(",")
-            if (normalized := normalize_domain(value))
-        )
         prefixes = tuple(
             normalized
             for value in os.getenv("TARGET_EMAIL_PREFIXES", "").split(",")
             if (normalized := normalize_email_prefix(value))
         )
-        if require_domains and not domains and not prefixes:
+        if require_prefixes and not prefixes:
             raise ValueError(
-                "Set TARGET_DOMAINS or TARGET_EMAIL_PREFIXES "
-                "(use comma-separated lists)"
+                "TARGET_EMAIL_PREFIXES is required "
+                "(use a comma-separated list)"
             )
 
         return cls(
             client_id=client_id,
             tenant_id=os.getenv("MICROSOFT_TENANT_ID", "common").strip() or "common",
-            target_domains=domains,
             target_email_prefixes=prefixes,
             dry_run=env_bool("DRY_RUN", True),
             token_cache_file=Path(
@@ -76,24 +68,8 @@ class Settings:
         )
 
 
-def normalize_domain(value: str) -> str:
-    return value.strip().lower().lstrip("@").strip(".")
-
-
 def normalize_email_prefix(value: str) -> str:
     return value.strip().lower()
-
-
-def sender_domain(email_address: str | None) -> str | None:
-    if not email_address or "@" not in email_address:
-        return None
-    return normalize_domain(email_address.rsplit("@", 1)[1])
-
-
-def domain_matches(domain: str | None, targets: Iterable[str]) -> bool:
-    if not domain:
-        return False
-    return any(domain == target or domain.endswith(f".{target}") for target in targets)
 
 
 def email_prefix_matches(
@@ -139,6 +115,17 @@ class GraphClient:
     def authenticate_device_code(self) -> None:
         flow = self.app.initiate_device_flow(scopes=SCOPES)
         if "user_code" not in flow:
+            description = str(flow.get("error_description", ""))
+            if "AADSTS70002" in description:
+                raise RuntimeError(
+                    "Microsoft rejected device login because this app is not "
+                    "configured as a mobile/desktop public client. In Microsoft "
+                    "Entra, open this app registration, then go to Authentication: "
+                    "(1) Add a platform > Mobile and desktop applications > "
+                    "select http://localhost; (2) under Advanced settings set "
+                    "Allow public client flows to Yes; (3) save and wait a few "
+                    "minutes before retrying."
+                )
             raise RuntimeError(f"Could not start device login: {json.dumps(flow)}")
 
         print(flow["message"], flush=True)
@@ -224,34 +211,44 @@ class GraphClient:
 def clean(settings: Settings) -> int:
     client = GraphClient(settings)
     scanned = matched = deleted = failures = 0
+    matching_messages: list[dict[str, Any]] = []
 
+    LOGGER.info(
+        "Scanning all existing Junk Email messages, including messages from "
+        "previous days."
+    )
     for message in client.junk_messages():
         scanned += 1
         address = (
             message.get("from", {}).get("emailAddress", {}).get("address")
         )
-        matches_domain = domain_matches(
-            sender_domain(address), settings.target_domains
-        )
-        matches_prefix = email_prefix_matches(
-            address, settings.target_email_prefixes
-        )
-        if not matches_domain and not matches_prefix:
+        if not email_prefix_matches(address, settings.target_email_prefixes):
             continue
 
         matched += 1
+        matching_messages.append(message)
         subject = message.get("subject") or "(no subject)"
         received = message.get("receivedDateTime") or "unknown date"
         LOGGER.info("MATCH sender=%s received=%s subject=%r", address, received, subject)
 
-        if settings.dry_run:
-            continue
+    if settings.dry_run:
+        LOGGER.info(
+            "Run complete: scanned=%s matched=%s deleted=0 failures=0 mode=DRY_RUN",
+            scanned,
+            matched,
+        )
+        return 0
 
+    LOGGER.info(
+        "Scan complete. Deleting %s matched message(s) from the stable snapshot.",
+        matched,
+    )
+    for message in matching_messages:
         try:
             client.delete_message(message["id"])
             deleted += 1
             LOGGER.info("Moved message to Deleted Items.")
-        except requests.RequestException:
+        except (KeyError, requests.RequestException):
             failures += 1
             LOGGER.exception("Could not delete message id=%s", message.get("id"))
 
@@ -261,7 +258,7 @@ def clean(settings: Settings) -> int:
         matched,
         deleted,
         failures,
-        "DRY_RUN" if settings.dry_run else "DELETE",
+        "DELETE",
     )
     return 1 if failures else 0
 
@@ -284,7 +281,7 @@ def main() -> int:
     )
     args = parse_args()
     try:
-        settings = Settings.from_env(require_domains=args.command == "clean")
+        settings = Settings.from_env(require_prefixes=args.command == "clean")
         client = GraphClient(settings)
         if args.command == "authenticate":
             client.authenticate_device_code()
