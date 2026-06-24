@@ -1,0 +1,13 @@
+services:
+  outlook-junk-cleaner:
+    build: .
+    container_name: outlook-junk-cleaner
+    restart: unless-stopped
+    init: true
+    env_file:
+      - ${ENV_FILE:-.env}
+    volumes:
+      - outlook-token-cache:/data
+
+volumes:
+  outlook-token-cache:
