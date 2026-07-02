@@ -1,0 +1,33 @@
+{
+  "name": "daily-email-cleanout",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "check": "tsc --noEmit && cargo check --manifest-path core/Cargo.toml --all-targets && cargo check --manifest-path helper/Cargo.toml --all-targets && cargo check --manifest-path src-tauri/Cargo.toml --all-targets",
+    "test": "cargo test --manifest-path core/Cargo.toml && cargo test --manifest-path helper/Cargo.toml && cargo test --manifest-path src-tauri/Cargo.toml",
+    "prepare:helper": "node scripts/prepare-helper.mjs",
+    "desktop:build": "npm run prepare:helper && tauri build --bundles app,dmg",
+    "preview": "vite preview",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-opener": "^2"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.6",
+    "@vitejs/plugin-react": "^4.6.0",
+    "typescript": "~5.8.3",
+    "vite": "^7.0.4",
+    "@tauri-apps/cli": "^2"
+  },
+  "overrides": {
+    "esbuild": "0.28.1"
+  }
+}

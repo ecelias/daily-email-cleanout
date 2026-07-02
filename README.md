@@ -1,123 +1,98 @@
-# Daily Outlook Junk Cleaner
+# Daily Email Cleanout
 
-Problem: An email address of mine got added to a spam email service that would send me multiple emails a day with inconsistent email domains, making it impossible to unsubscribe or block them. However, all email domains start with `@-----` followed by a random string of letters and numbers.
+A local macOS application that removes one recurring class of spam from a
+personal Outlook Junk Email folder.
 
-A Docker service that checks the Outlook/Microsoft 365 Junk Email folder every
-day and moves messages whose sender begins with `info@-----` to Deleted Items.
-It uses Microsoft Graph rather than browser automation.
+The stable sender pattern is:
 
-Each run checks the entire current Junk Email folder, not only messages received
-that day. If Docker is stopped for several days—or this is the first run—the
-next cleanup processes all matching older messages still in Junk Email. Graph
-pagination ensures the cleaner continues beyond the first 100 messages.
+```text
+info@-----
+```
 
-The cleaner completes the full scan before deleting anything. This stable
-snapshot prevents deletions from shifting Graph's paginated results and causing
-later matching messages to be skipped.
+The app scans the complete Junk Email backlog, follows all Microsoft Graph
+pages, snapshots every match before deletion, and moves matches to Deleted
+Items. It never permanently purges messages.
 
-## 1. Register a Microsoft application
+`MINIMAL_SPEC.md` is the immutable behavior specification. `AGENTS.md` contains
+the immutable development rules for future coding agents.
 
-In Microsoft Entra, create an app registration that supports public client
-flows. Add these **delegated** Microsoft Graph permissions:
+## Native macOS app
 
-- `Mail.ReadWrite`
-- `User.Read`
-- `offline_access`
+The desktop implementation lives in [`desktop/`](desktop/). It uses:
 
-Under **Authentication**:
+- Tauri 2
+- React and TypeScript
+- Rust
+- Microsoft device-code authorization
+- macOS Keychain
+- A local `launchd` background helper
 
-1. Select **Add a platform**.
-2. Select **Mobile and desktop applications**.
-3. Select the `http://localhost` redirect URI and configure it.
-4. Under **Advanced settings**, set **Allow public client flows** to **Yes**.
-5. Save the registration.
+No Docker service, cloud hosting, remote scheduler, App Store publication, or
+deployed backend is required.
 
-Copy the Application (client) ID. Microsoft can take a few minutes to apply
-authentication-setting changes.
-
-For a personal Outlook/Hotmail mailbox, the registration must support personal
-Microsoft accounts. A work or school tenant may require administrator approval.
-
-## 2. Configure the service
+### Build locally
 
 ```bash
-cp .env.example .env
+./scripts/build-macos.sh
 ```
 
-Edit `.env`:
+The script checks prerequisites, installs JavaScript dependencies, runs checks
+and tests, and produces:
 
-- Set `MICROSOFT_CLIENT_ID`.
-- For a personal-account-only registration, leave
-  `MICROSOFT_TENANT_ID=consumers`.
-- Leave `TARGET_EMAIL_PREFIXES=info@-----`.
-- Leave `DRY_RUN=true` until you have checked the logs.
-- Set `RUN_AT` and `TZ` for the daily schedule.
-
-```dotenv
-TARGET_EMAIL_PREFIXES=info@-----
+```text
+desktop/src-tauri/target/release/bundle/macos/Daily Email Cleanout.app
+desktop/src-tauri/target/release/bundle/dmg/Daily Email Cleanout_0.1.0_aarch64.dmg
 ```
 
-That matches `info@-----mail.FnopEKGKj0M9cG.com` case-insensitively. It does
-not match `sales@-----mail.example.com` or `myinfo@-----mail.example.com`.
+Move the `.app` to `/Applications`, open it, enter the Microsoft Application
+Client ID, and complete the device-code sign-in. The client ID is not a secret.
 
-## 3. Build and authorize once
+The Microsoft Entra application registration must:
+
+- Support personal Microsoft accounts.
+- Use the `consumers` authority.
+- Be configured as a Mobile and desktop application.
+- Enable public client flows.
+- Have delegated `Mail.ReadWrite`, `User.Read`, and `offline_access`
+  permissions.
+
+New installations begin in dry-run mode. Review the first scan before enabling
+deletion.
+
+### Local files
+
+The application stores settings and bounded run history under:
+
+```text
+~/Library/Application Support/com.elizabeth.daily-email-cleanout/
+```
+
+Refresh credentials are stored in macOS Keychain. Access tokens remain in
+memory. The optional daily schedule is installed at:
+
+```text
+~/Library/LaunchAgents/com.elizabeth.daily-email-cleanout.plist
+```
+
+### Uninstall
+
+Disable scheduling in the app, disconnect Microsoft, and then remove:
+
+```text
+/Applications/Daily Email Cleanout.app
+~/Library/Application Support/com.elizabeth.daily-email-cleanout/
+```
+
+If necessary, remove the LaunchAgent manually:
 
 ```bash
-docker compose build
-docker compose run --rm outlook-junk-cleaner python /app/clean_junk.py authenticate
+launchctl bootout "gui/$(id -u)" \
+  "$HOME/Library/LaunchAgents/com.elizabeth.daily-email-cleanout.plist" 2>/dev/null || true
+rm -f "$HOME/Library/LaunchAgents/com.elizabeth.daily-email-cleanout.plist"
 ```
 
-Open the URL printed in the terminal and enter its device code. The resulting
-refresh-token cache is stored in the named Docker volume, not in the repository.
+## Legacy Docker implementation
 
-If authorization says the client is not configured for public flows, enable
-**Allow public client flows** in the app registration and retry.
-
-## 4. Start daily operation
-
-```bash
-docker compose up -d
-docker compose logs -f
-```
-
-The service runs once on startup by default, then at `RUN_AT` every day. Docker
-restarts it automatically unless you deliberately stop it. The Docker engine
-(Docker Desktop on macOS) must be running for the schedule to execute.
-
-There is no missed-day bookkeeping to configure: after downtime, the startup
-run scans the full existing Junk Email backlog automatically.
-
-Review several dry runs. When the matches are correct, set:
-
-```dotenv
-DRY_RUN=false
-```
-
-Then apply the change:
-
-```bash
-docker compose up -d --force-recreate
-```
-
-Microsoft Graph's normal message delete operation moves mail to Deleted Items;
-it does not permanently purge the message.
-
-## Useful commands
-
-Run an extra cleanup immediately:
-
-```bash
-docker compose exec outlook-junk-cleaner python /app/clean_junk.py clean
-```
-
-Stop the service without deleting the login cache:
-
-```bash
-docker compose down
-```
-
-Remove the service and its saved Microsoft login:
-
-```bash
-docker compose down --volumes
-```
+The original Python/Docker implementation remains in the repository as a
+behavioral reference while desktop parity is verified. It is not required to
+run the macOS application.
